@@ -1,11 +1,11 @@
-"""Read-only tool: A-share quarterly shareholder count via Eastmoney datacenter.
+"""Read-only tool: A-share shareholder-count history via Eastmoney datacenter.
 
-Eastmoney's datacenter report API publishes the periodic "股东户数" (number of
-registered shareholders) disclosure for mainland A-shares: the holder count per
-report period, the quarter-over-quarter change, and the average holding value
-per account. This tool wraps that report behind the project's BaseTool contract
-and the frozen, IP-throttled Eastmoney client so the agent never hits the host
-un-throttled and never re-implements provider plumbing.
+Eastmoney's datacenter report API publishes periodic "股东户数" (number of
+registered shareholders) disclosures for mainland A-shares: the holder count per
+disclosed period, the change versus the provider's previous period, and the
+average holding value per account. This tool wraps that report behind the
+project's BaseTool contract and the frozen, IP-throttled Eastmoney client so the
+agent never hits the host un-throttled and never re-implements provider plumbing.
 
 Only mainland A-shares (``.SH`` / ``.SZ`` / ``.BJ``) carry this disclosure;
 other markets return an error envelope.
@@ -21,12 +21,12 @@ from src.agent.tools import BaseTool
 
 # Eastmoney datacenter report endpoint + the shareholder-number report id.
 _DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
-_REPORT_NAME = "RPT_HOLDERNUMLATEST"
+_REPORT_NAME = "RPT_HOLDERNUM_DET"
 
 # Report columns we surface, mapped to the API's field names.
 _COLUMNS = (
-    "SECUCODE,SECURITY_CODE,END_DATE,HOLDER_NUM,HOLDER_NUM_CHANGE,"
-    "HOLDER_NUM_RATIO,AVG_HOLD_AMT,AVG_HOLD_NUM,TOTAL_MARKET_CAP"
+    "SECUCODE,SECURITY_CODE,END_DATE,PRE_END_DATE,HOLDER_NUM,HOLDER_NUM_CHANGE,"
+    "HOLDER_NUM_RATIO,AVG_MARKET_CAP,AVG_HOLD_NUM,TOTAL_MARKET_CAP,HOLD_NOTICE_DATE"
 )
 
 # Hard cap on returned periods so a long history cannot bloat the payload.
@@ -35,16 +35,19 @@ _MAX_PERIODS = 24
 # A-share exchange suffixes this disclosure covers.
 _A_SHARE_SUFFIXES = ("SH", "SZ", "BJ")
 
+_EMPTY_RESULT_MESSAGES = ("返回数据为空",)
+
 
 class ShareholderCountTool(BaseTool):
-    """Fetch A-share quarterly shareholder counts with QoQ change and avg holding."""
+    """Fetch A-share shareholder-count history and comparison periods."""
 
     name = "get_shareholder_count"
     description = (
-        "Fetch mainland A-share quarterly shareholder count (股东户数) from the "
-        "Eastmoney datacenter: holder count per report period, quarter-over-quarter "
-        "change (absolute and percent), and average holding (shares and market value) "
-        "per account. Markets: China A-shares only (.SH / .SZ / .BJ). "
+        "Fetch mainland A-share shareholder-count history (股东户数) from the "
+        "Eastmoney datacenter: holder count per disclosed period, change versus "
+        "the provider's previous period, comparison dates, and average holding "
+        "(shares and market value) per account. Markets: China A-shares only "
+        "(.SH / .SZ / .BJ). "
         'Example: {"code": "600519.SH"}.'
     )
     parameters = {
@@ -115,6 +118,10 @@ class ShareholderCountTool(BaseTool):
         except Exception as exc:  # noqa: BLE001 - surface any fetch failure as envelope
             return _error(f"eastmoney datacenter request failed: {exc}")
 
+        rejection = _upstream_rejection(payload)
+        if rejection is not None:
+            return _error(f"eastmoney datacenter rejected the request: {rejection}")
+
         periods = _parse_periods(payload)
         if not periods:
             return _error(f"no shareholder-count disclosure found for '{code}'")
@@ -137,6 +144,18 @@ def _clamp_periods(value: Any) -> int:
     except (TypeError, ValueError, OverflowError):
         return _MAX_PERIODS
     return max(1, min(n, _MAX_PERIODS))
+
+
+def _upstream_rejection(payload: Any) -> str | None:
+    if not isinstance(payload, dict) or payload.get("success") is not False:
+        return None
+    message = payload.get("message")
+    if not (isinstance(message, str) and message.strip()):
+        return "request rejected without a message"
+    message = message.strip()
+    if message in _EMPTY_RESULT_MESSAGES:
+        return None
+    return message
 
 
 def _parse_periods(payload: Any) -> list[dict]:
@@ -176,22 +195,27 @@ def _normalize_row(row: Any) -> dict | None:
         row: One element of ``result.data``.
 
     Returns:
-        ``{end_date, holder_count, holder_count_change, holder_count_change_pct,
-        avg_hold_shares, avg_hold_amount, total_market_cap}`` or ``None``.
+        ``{end_date, prev_end_date, notice_date, holder_count,
+        holder_count_change, holder_count_change_pct, avg_hold_shares,
+        avg_hold_amount, total_market_cap}`` or ``None``.
     """
     if not isinstance(row, dict):
         return None
     end_date = _clean_date(row.get("END_DATE"))
+    prev_end_date = _clean_date(row.get("PRE_END_DATE"))
+    notice_date = _clean_date(row.get("HOLD_NOTICE_DATE"))
     holder_count = _to_number(row.get("HOLDER_NUM"))
     if end_date is None and holder_count is None:
         return None
     return {
         "end_date": end_date,
+        "prev_end_date": prev_end_date,
+        "notice_date": notice_date,
         "holder_count": holder_count,
         "holder_count_change": _to_number(row.get("HOLDER_NUM_CHANGE")),
         "holder_count_change_pct": _to_number(row.get("HOLDER_NUM_RATIO")),
         "avg_hold_shares": _to_number(row.get("AVG_HOLD_NUM")),
-        "avg_hold_amount": _to_number(row.get("AVG_HOLD_AMT")),
+        "avg_hold_amount": _to_number(row.get("AVG_MARKET_CAP")),
         "total_market_cap": _to_number(row.get("TOTAL_MARKET_CAP")),
     }
 

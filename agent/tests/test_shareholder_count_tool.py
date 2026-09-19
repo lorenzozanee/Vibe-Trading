@@ -18,21 +18,23 @@ _SAMPLE_PAYLOAD = {
             {
                 "SECUCODE": "600519.SH",
                 "END_DATE": "2024-03-31 00:00:00",
+                "PRE_END_DATE": "2023-12-31 00:00:00",
                 "HOLDER_NUM": 188000,
                 "HOLDER_NUM_CHANGE": -2000,
                 "HOLDER_NUM_RATIO": -1.05,
                 "AVG_HOLD_NUM": 6680.0,
-                "AVG_HOLD_AMT": 12345678.0,
+                "AVG_MARKET_CAP": 12345678.0,
                 "TOTAL_MARKET_CAP": 2.1e12,
             },
             {
                 "SECUCODE": "600519.SH",
                 "END_DATE": "2023-12-31 00:00:00",
+                "PRE_END_DATE": "2023-09-30 00:00:00",
                 "HOLDER_NUM": 190000,
                 "HOLDER_NUM_CHANGE": 1500,
                 "HOLDER_NUM_RATIO": 0.80,
                 "AVG_HOLD_NUM": 6610.0,
-                "AVG_HOLD_AMT": 12000000.0,
+                "AVG_MARKET_CAP": 12000000.0,
                 "TOTAL_MARKET_CAP": 2.0e12,
             },
         ]
@@ -54,6 +56,8 @@ def test_success_envelope_parses_periods_newest_first():
     assert len(periods) == 2
     assert periods[0] == {
         "end_date": "2024-03-31",
+        "prev_end_date": "2023-12-31",
+        "notice_date": None,
         "holder_count": 188000.0,
         "holder_count_change": -2000.0,
         "holder_count_change_pct": -1.05,
@@ -72,6 +76,20 @@ def test_max_periods_caps_returned_rows():
         out = ShareholderCountTool().execute(code="600519.SH", max_periods=1)
     payload = json.loads(out)
     assert len(payload["data"]["periods"]) == 1
+
+
+def test_history_request_preserves_limit_and_comparison_period():
+    with patch.object(sct, "get_json", return_value=_SAMPLE_PAYLOAD) as mock_get:
+        out = ShareholderCountTool().execute(code="600519.SH", max_periods=4)
+
+    payload = json.loads(out)
+    assert payload["ok"] is True
+    assert len(payload["data"]["periods"]) == 2
+    assert payload["data"]["periods"][0]["prev_end_date"] == "2023-12-31"
+    params = mock_get.call_args.kwargs["params"]
+    assert params["reportName"] == "RPT_HOLDERNUM_DET"
+    assert params["pageSize"] == "4"
+    assert "PRE_END_DATE" in params["columns"]
 
 
 def test_non_a_share_returns_error_envelope():
